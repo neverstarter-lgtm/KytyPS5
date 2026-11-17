@@ -189,6 +189,23 @@ static bool AmdExplicitVertexBarycentrics(vk::PhysicalDevice physical_device, co
 	return true;
 }
 
+// A GPU without VK_KHR_fragment_shader_barycentric (NVIDIA before Turing) but with geometry shaders: the pixel shaders'
+// per-vertex inputs and barycentric weights are emulated by a geometry shader (BuildEmulatedBarycentricShader).
+// KYTY_EMULATE_BARYCENTRICS=0 turns it off. VulkanCreateDevice enables the geometryShader feature where this is set.
+static bool EmulatedVertexBarycentrics(vk::PhysicalDevice physical_device, const std::vector<vk::ExtensionProperties>& available,
+                                       GraphicContext& graphics) {
+	graphics.emulated_vertex_barycentrics = false;
+	if (const char* setting = std::getenv("KYTY_EMULATE_BARYCENTRICS"); setting != nullptr && std::string_view(setting) == "0")
+		return false;
+	vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentric {};
+	vk::PhysicalDeviceFeatures2                            features {};
+	if (HasExtension(available, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME)) features.pNext = &barycentric;
+	physical_device.getFeatures2(&features);
+	if (barycentric.fragmentShaderBarycentric == VK_TRUE || features.features.geometryShader != VK_TRUE) return false;
+	graphics.emulated_vertex_barycentrics = true;
+	return true;
+}
+
 // VK_EXT_fragment_shader_interlock where the GPU has its pixel-ordered interlock and reads storage images without a
 // format (both enabled by VulkanCreateDevice): the deferred decals' read and write of the G-buffer ordered per pixel
 // (TranslatorFeaturePixelInterlock, issues #315 and #341). Not on AMD's Windows driver by default: it has the interlock
@@ -867,6 +884,8 @@ static void VulkanInitSubgroupSizeControl(vk::PhysicalDevice physical_device,
 	// The AMD barycentrics only with AMD's older compiler, its extension enabled (AmdExplicitVertexBarycentrics), and
 	// whatever the store was made with: the KHR ones' pipelines are refused there (issue #305).
 	if (!graphics.amd_explicit_vertex_barycentrics) features &= ~Translate::TranslatorFeatureAmdBarycentrics;
+	// The barycentric emulation only where the GPU lacks the extension (EmulatedVertexBarycentrics).
+	if (!graphics.emulated_vertex_barycentrics) features &= ~Translate::TranslatorFeatureEmulatedBarycentrics;
 	// The pixel interlock only where its extension is enabled (PixelInterlockExtension).
 	features &= PixelInterlockFeatureMask(graphics);
 	const uint32_t amd_required =
@@ -1211,6 +1230,7 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 	device_features.shaderImageGatherExtended            = VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.tessellationShader                   = VK_TRUE;
+	if (graphics.emulated_vertex_barycentrics) device_features.geometryShader = VK_TRUE;
 	device_features.sampleRateShading                    = VK_TRUE;
 	device_features.depthBiasClamp                       = VK_TRUE;
 	device_features.shaderClipDistance                   = VK_TRUE;
@@ -1891,6 +1911,7 @@ void WindowContext::CreateVulkan() {
 		// (RADV's PS epilogs: VulkanCreateDevice.)
 		RadvEpilogCacheExtension(graphic_ctx.physical_device, available_extensions, device_extensions);
 		(void)AmdExplicitVertexBarycentrics(graphic_ctx.physical_device, available_extensions, device_extensions, graphic_ctx);
+		(void)EmulatedVertexBarycentrics(graphic_ctx.physical_device, available_extensions, graphic_ctx);
 		(void)PixelInterlockExtension(graphic_ctx.physical_device, available_extensions, device_extensions, graphic_ctx, true);
 		(void)AddressBindingReport(graphic_ctx.physical_device, available_extensions, device_extensions, graphic_ctx);
 		// KYTY_GPU_CHECKPOINTS (diagnostic): the pipelines a GPU hang or fault ran (device-fault.h).
@@ -2148,6 +2169,7 @@ bool CreateHeadlessGraphicContext(GraphicContext& graphic_ctx) {
 			device_extensions.push_back(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
 		}
 		(void)AmdExplicitVertexBarycentrics(graphic_ctx.physical_device, available_extensions, device_extensions, graphic_ctx);
+		(void)EmulatedVertexBarycentrics(graphic_ctx.physical_device, available_extensions, graphic_ctx);
 		(void)PixelInterlockExtension(graphic_ctx.physical_device, available_extensions, device_extensions, graphic_ctx, false);
 	}
 	VulkanInitSubgroupSizeControl(graphic_ctx.physical_device, graphic_ctx);

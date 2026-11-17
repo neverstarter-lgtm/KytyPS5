@@ -182,6 +182,32 @@ bool     ShaderPixelParameterIsCustom(const ShaderPixelInputInfo& info, uint32_t
 bool     ShaderPixelParameterDefault(const ShaderPixelInputInfo& info, uint32_t input,
                                      uint32_t component, uint32_t& bits);
 
+// GPUs without VK_KHR_fragment_shader_barycentric (NVIDIA before Turing: GeForce GTX 10 series and older): a pixel shader's
+// per-vertex inputs (the PS5 compiler's shaders read each vertex's raw values and interpolate them themselves) and its
+// barycentric weights cannot come from the extension. A geometry shader between the last pre-raster stage and the pixel
+// shader (BuildEmulatedBarycentricShader) hands each triangle's three vertices' values on as flat inputs of three
+// locations each, and the weights as an ordinary varying, one vertex of the output triangle each (1,0,0), (0,1,0),
+// (0,0,1): the order of VK_KHR_fragment_shader_barycentric's PerVertexKHR arrays and BaryCoordKHR for a triangle list.
+// The pixel shader's translation (Frontend::TranslatorFeatureEmulatedBarycentrics) and that geometry shader lay the
+// locations out by this one function, so they agree.
+struct ShaderEmulatedBarycentricLayout {
+	// False when the shader's interface does not fit in 32 locations: it then keeps the extension's declarations.
+	bool                     ok = false;
+	// By position among the shader's parameter inputs (those of `active_inputs`): the first of the three locations of a
+	// per-vertex input (its vertex 0, then 1 and 2 at the next two); unused for the others.
+	std::array<uint32_t, 32> vertex_location {};
+	// The weights' varyings (BaryCoordKHR, BaryCoordNoPerspKHR), UINT32_MAX when the shader reads none of that kind.
+	uint32_t                 smooth_location        = UINT32_MAX;
+	uint32_t                 noperspective_location = UINT32_MAX;
+};
+
+// `active_inputs` are the parameter inputs in program order (as ShaderPixelParameterLocation takes them), `per_vertex` a
+// flag for each.
+ShaderEmulatedBarycentricLayout ShaderPixelEmulatedBarycentrics(const ShaderPixelInputInfo&    info,
+                                                                std::span<const uint32_t>      active_inputs,
+                                                                std::span<const bool>          per_vertex,
+                                                                bool smooth_weights, bool noperspective_weights);
+
 struct ShaderSharp {
 	uint16_t offset_dw : 15;
 	uint16_t size      : 1;
