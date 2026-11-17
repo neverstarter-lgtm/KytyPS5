@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/barycentricShader.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 #include "device-fault.h"
@@ -1103,6 +1104,23 @@ void CreatePipelineInternal(
 	EXIT_NOT_IMPLEMENTED(
 	    rect_list && (tess_control_shader_module == nullptr || tess_eval_shader_module == nullptr));
 
+	// No VK_KHR_fragment_shader_barycentric (GeForce GTX 10 series and older): a geometry shader hands the pixel shader its
+	// per-vertex inputs and barycentric weights (BuildEmulatedBarycentricShader; empty when the pixel shader reads neither).
+	vk::ShaderModule geometry_shader_module = nullptr;
+	const bool triangles = static_params.topology == vk::PrimitiveTopology::eTriangleList ||
+	                       static_params.topology == vk::PrimitiveTopology::eTriangleStrip ||
+	                       static_params.topology == vk::PrimitiveTopology::eTriangleFan || rect_list;
+	if (graphics.emulated_vertex_barycentrics && ps_active && !mesh && triangles) {
+		const auto geometry = BuildEmulatedBarycentricShader(vs_input_info, *ps_input_info, rect_list,
+		                                                     static_params.provoking_vtx_last);
+		if (!geometry.empty()) {
+			create_info.codeSize = geometry.size() * 4;
+			create_info.pCode    = geometry.data();
+			result = graphics.device.createShaderModule(&create_info, nullptr, &geometry_shader_module);
+			EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+		}
+	}
+
 	vk::PipelineShaderStageCreateInfo vert_shader_stage_info {};
 	vert_shader_stage_info.stage  = vertex_stage;
 	vert_shader_stage_info.module = vertex_program.module;
@@ -1128,12 +1146,20 @@ void CreatePipelineInternal(
 	tess_eval_shader_stage_info.module = tess_eval_shader_module;
 	tess_eval_shader_stage_info.pName  = "main";
 
-	vk::PipelineShaderStageCreateInfo shader_stages[4]   = {};
+	vk::PipelineShaderStageCreateInfo geometry_shader_stage_info {};
+	geometry_shader_stage_info.stage  = vk::ShaderStageFlagBits::eGeometry;
+	geometry_shader_stage_info.module = geometry_shader_module;
+	geometry_shader_stage_info.pName  = "main";
+
+	vk::PipelineShaderStageCreateInfo shader_stages[5]   = {};
 	uint32_t                          shader_stage_count = 0;
 	shader_stages[shader_stage_count++]                  = vert_shader_stage_info;
 	if (rect_list) {
 		shader_stages[shader_stage_count++] = tess_control_shader_stage_info;
 		shader_stages[shader_stage_count++] = tess_eval_shader_stage_info;
+	}
+	if (geometry_shader_module != nullptr) {
+		shader_stages[shader_stage_count++] = geometry_shader_stage_info;
 	}
 	vk::PipelineShaderStageCreateInfo empty_frag_stage_info {};
 	if (ps_active) {
@@ -1489,6 +1515,9 @@ void CreatePipelineInternal(
 	}
 	if (tess_eval_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
+	}
+	if (geometry_shader_module != nullptr) {
+		graphics.device.destroyShaderModule(geometry_shader_module, nullptr);
 	}
 }
 

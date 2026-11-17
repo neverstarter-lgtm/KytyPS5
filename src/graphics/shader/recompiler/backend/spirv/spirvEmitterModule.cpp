@@ -521,12 +521,22 @@ void AddInputAnnotationsAndNames(EmitterState& state) {
 			    {OpDecorate, state.subgroup_local_invocation_id_variable, DecorationFlat});
 		}
 	}
+	size_t parameter_index = 0;
 	for (const auto& input: state.inputs) {
 		state.builder.AddName(input.variable_id, input.debug_name.c_str());
 		if (input.kind == IR::StageInputKind::Layer || input.kind == IR::StageInputKind::SampleId) {
 			state.builder.AddAnnotation({OpDecorate, input.variable_id, DecorationFlat});
 		}
 		if (input.kind == IR::StageInputKind::Parameter) {
+			const auto parameter = parameter_index++;
+			if (state.emulated_barycentrics && input.per_vertex) {
+				// The three vertices' values as a flat array of three vec4 at three locations of the emulating
+				// geometry shader's outputs (ShaderPixelEmulatedBarycentrics).
+				state.builder.AddAnnotation({OpDecorate, input.variable_id, DecorationFlat});
+				state.builder.AddAnnotation({OpDecorate, input.variable_id, DecorationLocation,
+				                             state.emulated_layout.vertex_location[parameter]});
+				continue;
+			}
 			const auto flat = PixelParameterIsFlat(state, input.location);
 			if (input.per_vertex) {
 				state.builder.AddAnnotation(
@@ -542,6 +552,19 @@ void AddInputAnnotationsAndNames(EmitterState& state) {
 			const auto location = PixelParameterLocation(state, input.location);
 			state.builder.AddAnnotation(
 			    {OpDecorate, input.variable_id, DecorationLocation, location});
+			continue;
+		}
+		if (state.emulated_barycentrics && (input.kind == IR::StageInputKind::BaryCoordSmooth ||
+		                                    input.kind == IR::StageInputKind::BaryCoordNoPerspective)) {
+			// The weights as an ordinary varying of the emulating geometry shader: smooth is perspective correct (as
+			// BaryCoordKHR), noperspective linear in the screen (as BaryCoordNoPerspKHR).
+			const bool linear = input.kind == IR::StageInputKind::BaryCoordNoPerspective;
+			state.builder.AddAnnotation(
+			    {OpDecorate, input.variable_id, DecorationLocation,
+			     linear ? state.emulated_layout.noperspective_location : state.emulated_layout.smooth_location});
+			if (linear) {
+				state.builder.AddAnnotation({OpDecorate, input.variable_id, DecorationNoPerspective});
+			}
 			continue;
 		}
 		auto builtin = BuiltInForInput(input.kind);
@@ -760,7 +783,7 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireExtension("SPV_KHR_compute_shader_derivatives");
 	}
 	const bool fragment_barycentric =
-	    state.stage == ShaderType::Pixel &&
+	    state.stage == ShaderType::Pixel && !state.emulated_barycentrics &&
 	    std::any_of(state.inputs.begin(), state.inputs.end(), [](const InputBinding& input) {
 		    return input.per_vertex || input.kind == IR::StageInputKind::BaryCoordSmooth ||
 		           input.kind == IR::StageInputKind::BaryCoordNoPerspective;

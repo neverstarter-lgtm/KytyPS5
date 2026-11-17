@@ -813,6 +813,8 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	ir.pixel_quad_reads = (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeaturePixelQuadReads) != 0;
 	ir.unfused_mad = (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureUnfusedMad) != 0;
 	ir.amd_barycentrics = (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureAmdBarycentrics) != 0;
+	ir.emulated_barycentrics =
+	    (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureEmulatedBarycentrics) != 0;
 	IR::AllocateBindings(ir, push_data_start_dword, options.enable_lod_stats,
 	                     options.table_mode && options.table_dead_user_data);
 	DumpShaderIr(options, ir);
