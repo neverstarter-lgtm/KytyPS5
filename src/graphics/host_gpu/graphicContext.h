@@ -51,6 +51,10 @@ struct GraphicContext {
 	// VK_AMD_shader_explicit_vertex_parameter enabled for the barycentrics of AMD's older Windows compiler (issue #305;
 	// AmdExplicitVertexBarycentrics in vulkanWindow.cpp, ShaderRecompiler::Frontend::TranslatorFeatureAmdBarycentrics).
 	bool                               amd_explicit_vertex_barycentrics      = false;
+	// No VK_KHR_fragment_shader_barycentric but geometry shaders (GeForce GTX 10 series and older): per-vertex pixel inputs
+	// and barycentric weights come from a geometry shader (EmulatedVertexBarycentrics in vulkanWindow.cpp,
+	// BuildEmulatedBarycentricShader, ShaderRecompiler::Frontend::TranslatorFeatureEmulatedBarycentrics).
+	bool                               emulated_vertex_barycentrics          = false;
 	// VK_EXT_fragment_shader_interlock's pixel interlock and storage image reads without a format enabled
 	// (PixelInterlockExtension in vulkanWindow.cpp, ShaderRecompiler::Frontend::TranslatorFeaturePixelInterlock).
 	bool                               fragment_shader_pixel_interlock       = false;

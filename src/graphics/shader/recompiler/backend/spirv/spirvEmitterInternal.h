@@ -425,6 +425,11 @@ struct EmitterState {
 	// A pixel shader's barycentrics (I, J) from BaryCoordSmoothAMD/BaryCoordNoPerspAMD (a 2-vector) instead of the KHR
 	// built-ins (3-vectors read at 1 and 2): IR::Program::amd_barycentrics and no per-vertex input (EmitProgram).
 	bool                                             amd_barycentrics        = false;
+	// A pixel shader's per-vertex inputs as flat arrays of three vec4 at three locations each (not PerVertexKHR) and its
+	// weights as an ordinary varying (not BaryCoordKHR), the locations those of `emulated_layout`: a geometry shader
+	// before it supplies them (IR::Program::emulated_barycentrics; EmitProgram).
+	bool                                             emulated_barycentrics   = false;
+	ShaderEmulatedBarycentricLayout                  emulated_layout;
 	uint32_t                                         lod_helper_variable     = 0;
 	uint32_t                                         gds_length              = 0;
 	uint32_t                                         push_constant_variable  = 0;

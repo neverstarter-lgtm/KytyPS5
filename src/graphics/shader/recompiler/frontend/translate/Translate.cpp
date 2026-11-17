@@ -21,7 +21,8 @@ static std::atomic<uint32_t> g_translator_features {TranslatorFeatures};
 // (The AMD barycentrics and the pixel interlock only where the device setup allows them: a translation without a device,
 // the tests', keeps KHR's barycentrics and no interlock.)
 static std::atomic<uint32_t> g_device_features {TranslatorFeatures & ~TranslatorFeatureAmdBarycentrics &
-                                                ~TranslatorFeaturePixelInterlock};
+                                                ~TranslatorFeaturePixelInterlock &
+                                                ~TranslatorFeatureEmulatedBarycentrics};
 static std::atomic<uint32_t> g_device_required {0};
 
 void SetTranslatorFeatures(uint32_t features) {
@@ -56,6 +57,7 @@ uint32_t TranslatorFeatureSet() {
 	static const int lane_wide    = forced("KYTY_LANE_LOCAL_WIDE");
 	static const int amd_bary     = forced("KYTY_AMD_BARYCENTRICS");
 	static const int interlock    = forced("KYTY_PIXEL_INTERLOCK");
+	static const int emulate_bary = forced("KYTY_EMULATE_BARYCENTRICS");
 	const auto       stored       = g_translator_features.load(std::memory_order_relaxed);
 	const auto       device       = g_device_features.load(std::memory_order_relaxed);
 	auto             features     = (stored & device) | g_device_required.load(std::memory_order_relaxed);
@@ -73,6 +75,9 @@ uint32_t TranslatorFeatureSet() {
 	apply(amd_bary, TranslatorFeatureAmdBarycentrics);
 	// (Forced on only where the device has it: a pipeline of it fails elsewhere.)
 	apply(interlock, TranslatorFeaturePixelInterlock & device);
+	// (KYTY_EMULATE_BARYCENTRICS=0 turns the emulation off on a GPU that would use it: the pipelines of those pixel
+	// shaders then fail as before; forced on only where the device allows it, as the pipeline needs a geometry shader.)
+	apply(emulate_bary, TranslatorFeatureEmulatedBarycentrics & device);
 	return features;
 }
 
