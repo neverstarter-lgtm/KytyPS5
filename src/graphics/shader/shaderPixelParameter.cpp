@@ -2,6 +2,8 @@
 
 #include "common/assert.h"
 
+#include <algorithm>
+
 namespace Libs::Graphics {
 
 namespace {
@@ -45,6 +47,34 @@ bool ShaderPixelParameterIsFlat(const ShaderPixelInputInfo& info, uint32_t input
 
 bool ShaderPixelParameterIsCustom(const ShaderPixelInputInfo& info, uint32_t input) {
 	return input < 32u && (info.custom_interpolation_mask & (1u << input)) != 0;
+}
+
+ShaderEmulatedBarycentricLayout ShaderPixelEmulatedBarycentrics(const ShaderPixelInputInfo&    info,
+                                                                std::span<const uint32_t>      active_inputs,
+                                                                std::span<const bool>          per_vertex,
+                                                                bool smooth_weights, bool noperspective_weights) {
+	constexpr uint32_t LocationCount = 32;
+	ShaderEmulatedBarycentricLayout layout;
+	if (active_inputs.size() > layout.vertex_location.size() || per_vertex.size() != active_inputs.size()) {
+		return layout;
+	}
+	// The ordinary parameters keep their locations; the per-vertex ones (three locations each) and the weights follow.
+	uint32_t next = 0;
+	for (size_t i = 0; i < active_inputs.size(); i++) {
+		if (!per_vertex[i]) {
+			next = std::max(next, ShaderPixelParameterLocation(info, active_inputs, active_inputs[i]) + 1u);
+		}
+	}
+	for (size_t i = 0; i < active_inputs.size(); i++) {
+		if (per_vertex[i]) {
+			layout.vertex_location[i] = next;
+			next += 3u;
+		}
+	}
+	if (smooth_weights) layout.smooth_location = next++;
+	if (noperspective_weights) layout.noperspective_location = next++;
+	layout.ok = next <= LocationCount;
+	return layout;
 }
 
 bool ShaderPixelParameterDefault(const ShaderPixelInputInfo& info, uint32_t input,

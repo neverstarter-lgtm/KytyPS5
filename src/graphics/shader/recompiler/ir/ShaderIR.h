@@ -887,6 +887,9 @@ struct Program: ResourcePlan {
 	// A pixel shader's barycentrics without per-vertex inputs from VK_AMD_shader_explicit_vertex_parameter
 	// (Frontend::TranslatorFeatureAmdBarycentrics; the backend checks for the per-vertex inputs).
 	bool                          amd_barycentrics = false;
+	// A pixel shader's per-vertex inputs and barycentric weights as flat arrays and an ordinary varying, fed by a geometry
+	// shader, instead of VK_KHR_fragment_shader_barycentric's (Frontend::TranslatorFeatureEmulatedBarycentrics).
+	bool                          emulated_barycentrics = false;
 
 	std::optional<SpirvRequirements> spirv_requirements;
 };

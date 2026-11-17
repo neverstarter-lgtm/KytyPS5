@@ -340,6 +340,43 @@ std::vector<uint32_t> EmitProgram(const IR::Program& program,
 	state.amd_barycentrics =
 	    program.amd_barycentrics && state.stage == ShaderType::Pixel &&
 	    std::none_of(state.inputs.begin(), state.inputs.end(), [](const InputBinding& input) { return input.per_vertex; });
+	// (Where the GPU has no VK_KHR_fragment_shader_barycentric: the per-vertex inputs and the weights come from the
+	// geometry shader that BuildEmulatedBarycentricShader makes for the pipeline, at the locations of one layout; a
+	// shader whose interface does not fit keeps the extension's declarations.)
+	if (program.emulated_barycentrics && state.stage == ShaderType::Pixel && !state.amd_barycentrics &&
+	    state.input_info.pixel != nullptr) {
+		std::array<uint32_t, 32> active {};
+		std::array<bool, 32>     per_vertex {};
+		size_t                   count          = 0;
+		bool                     smooth_weights = false;
+		bool                     linear_weights = false;
+		bool                     any            = false;
+		bool                     fits           = true;
+		for (const auto& input: state.inputs) {
+			if (input.kind == IR::StageInputKind::Parameter) {
+				if (count == active.size()) {
+					fits = false;
+					break;
+				}
+				active[count]     = input.location;
+				per_vertex[count] = input.per_vertex;
+				any               = any || input.per_vertex;
+				count++;
+			} else if (input.kind == IR::StageInputKind::BaryCoordSmooth) {
+				smooth_weights = any = true;
+			} else if (input.kind == IR::StageInputKind::BaryCoordNoPerspective) {
+				linear_weights = any = true;
+			}
+		}
+		if (fits && any) {
+			const auto layout = ShaderPixelEmulatedBarycentrics(*state.input_info.pixel, {active.data(), count},
+			                                                    {per_vertex.data(), count}, smooth_weights, linear_weights);
+			if (layout.ok) {
+				state.emulated_barycentrics = true;
+				state.emulated_layout       = layout;
+			}
+		}
+	}
 	AllocateInputVariables(state);
 	AllocateOutputVariables(state);
 	DefineModule(state);

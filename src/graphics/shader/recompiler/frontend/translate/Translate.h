@@ -106,10 +106,18 @@ constexpr uint32_t TranslatorFeatureAmdBarycentrics = 256u;
 // pixel interlock and storage reads without a format, and not on AMD's Windows driver unless forced (TranslatorDeviceFeatures;
 // PixelInterlockExtension: characters' faces came out wrong with it there, issue #355).
 constexpr uint32_t TranslatorFeaturePixelInterlock = 512u;
+// A pixel shader's per-vertex inputs and barycentric weights without VK_KHR_fragment_shader_barycentric (NVIDIA's GeForce
+// GTX 10 series and older): its per-vertex inputs are flat arrays of three vec4 at three locations each (instead of
+// PerVertexKHR) and its weights an ordinary varying (instead of BaryCoordKHR), both fed by a geometry shader that the
+// pipeline puts before it (BuildEmulatedBarycentricShader; ShaderPixelEmulatedBarycentrics lays the locations out).
+// Only where the GPU lacks the extension and has geometry shaders (TranslatorDeviceFeatures): no other GPU's SPIR-V
+// changes.
+constexpr uint32_t TranslatorFeatureEmulatedBarycentrics = 1024u;
 constexpr uint32_t TranslatorFeatures = TranslatorFeatureCooperativeHalves | TranslatorFeatureTableSlotsAtUse |
                                         TranslatorFeatureNativeFloatMinMax | TranslatorFeatureExecSelects |
                                         TranslatorFeaturePixelQuadReads | TranslatorFeatureUnfusedMad |
-                                        TranslatorFeatureAmdBarycentrics | TranslatorFeaturePixelInterlock
+                                        TranslatorFeatureAmdBarycentrics | TranslatorFeaturePixelInterlock |
+                                        TranslatorFeatureEmulatedBarycentrics
 #if defined(KYTY_STEAM_DECK)
                                         | TranslatorFeatureBdaGroupWalks
 #endif
