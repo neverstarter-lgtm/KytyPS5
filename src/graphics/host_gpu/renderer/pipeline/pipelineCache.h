@@ -206,6 +206,9 @@ public:
 		bool                    native_bindings       = false;
 		// PipelineBuild::Fast compiled it unoptimized; `optimized` is its optimized build.
 		bool                            unoptimized = false;
+		// A graphics pipeline made with the barycentric emulation's geometry shader (2) or without it (1); 0 otherwise
+		// (local/barycentric-census.h).
+		uint8_t                         barycentric_gs = 0;
 		std::shared_ptr<OptimizedBuild> optimized;
 		// Out of video memory while idle (EvictIdlePipelines): the flip of its last binding (BindPipelineHandle), and how
 		// to make it again (a pipeline the static store gave: made again from it; null: never evicted).
