@@ -19,6 +19,7 @@
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/barycentricShader.h"
+#include "barycentric-census.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 #include "device-fault.h"
@@ -1119,6 +1120,13 @@ void CreatePipelineInternal(
 			result = graphics.device.createShaderModule(&create_info, nullptr, &geometry_shader_module);
 			EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 		}
+	}
+	// What the census counts its draws as (local/barycentric-census.h); the optimized build of a pipeline is not counted
+	// again.
+	if (graphics.emulated_vertex_barycentrics) {
+		const auto kind = geometry_shader_module != nullptr ? BarycentricCensus::Emulated : BarycentricCensus::Plain;
+		pipeline.barycentric_gs = kind;
+		if (build != PipelineBuild::Optimize) BarycentricCensus::NotePipeline(kind);
 	}
 
 	vk::PipelineShaderStageCreateInfo vert_shader_stage_info {};

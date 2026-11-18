@@ -3187,6 +3187,11 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 		noted.copy = source->CpuAddress() == 0 && mapped.size() >= arguments[0].second + sizeof(noted.copied);
 		if (noted.copy) std::memcpy(noted.copied.data(), mapped.data() + arguments[0].second, sizeof(noted.copied));
 	}
+	if (pipeline.barycentric_gs != BarycentricCensus::NotCounted) {
+		if (direct != nullptr && !vertex_arguments)
+			BarycentricCensus::NoteDraw(pipeline.barycentric_gs, direct->index_count, direct->instance_count);
+		for (uint32_t group = 0; group < groups; ++group) BarycentricCensus::NoteDraw(pipeline.barycentric_gs, 0, 0);
+	}
 	LiveCounters::Add(LiveCounters::TableDraws, std::max<size_t>(commands.size(), 1));
 	return TableResult::Drawn;
 }
