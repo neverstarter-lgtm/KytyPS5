@@ -3769,6 +3769,12 @@ bool RenderExecutor::NativeXprEmit(CommandBuffer& buffer, NativeXprRecord& recor
 		for (uint32_t group = 0; group < groups; ++group)
 			vk_buffer.drawIndexedIndirect(arguments[group].first->Handle(), arguments[group].second,
 			                              group_sizes[group], static_cast<uint32_t>(stride));
+		if (pipeline.barycentric_gs != BarycentricCensus::NotCounted) {
+			if (direct != nullptr)
+				BarycentricCensus::NoteDraw(pipeline.barycentric_gs, direct->draw.index_count,
+				                            direct->draw.instance_count);
+			for (uint32_t group = 0; group < groups; ++group) BarycentricCensus::NoteDraw(pipeline.barycentric_gs, 0, 0);
+		}
 	}
 	emit.command     = vk_buffer;
 	emit.generation  = buffer.GraphicsGeneration();

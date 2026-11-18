@@ -38,6 +38,7 @@
 #include "live-counters.h"
 #include "live-switch.h"
 #include "device-fault.h"
+#include "barycentric-census.h"
 #include "frame-capture.h"
 #include "frame-gen.h"
 #include "frame-gen-hudless.h"
@@ -1796,6 +1797,16 @@ bool RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                         emit_draw);
 	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
+	if (pipeline.barycentric_gs != BarycentricCensus::NotCounted) {
+		if (mesh_active || emit.gpu_args != 0) {
+			BarycentricCensus::NoteDraw(pipeline.barycentric_gs, 0, 0);
+		} else if (!emit.direct_run.empty()) {
+			for (const auto& item: emit.direct_run)
+				BarycentricCensus::NoteDraw(pipeline.barycentric_gs, item.indexCount, item.instanceCount);
+		} else {
+			BarycentricCensus::NoteDraw(pipeline.barycentric_gs, draw.index_count, draw.instance_count);
+		}
+	}
 	if (!record_draw) {
 		if (set_auto_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
