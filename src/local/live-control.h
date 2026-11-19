@@ -64,6 +64,9 @@
 #include <ucontext.h>
 #endif
 
+// The compute chains' switch (demonsSouls.cpp), set by the `chain` command.
+extern "C" volatile std::atomic<uint32_t> kyty_local_compute_chain_mode; // (demonsSouls.cpp)
+
 #if defined(KYTY_PGO_GENERATE)
 // compiler-rt profile runtime (instrumented builds only).
 extern "C" void __llvm_profile_set_filename(const char*);
@@ -769,6 +772,11 @@ inline void Run(uint64_t id, const std::string& line) {
 		// set <name> <value>: a live switch (live-switch.h).
 		const bool ok = LiveSwitch::Set(arg1, std::strtoll(arg2, nullptr, 10));
 		std::printf("LIVE_SET id=%" PRIu64 " %s=%s ok=%d\n", id, arg1, arg2, ok ? 1 : 0);
+	} else if (cmd == "chain" && n >= 2) {
+		// chain <0|1>: the compute chains off (as KYTY_COMPUTE_CHAIN=0, the launcher's Safe GPU mode) or on, live
+		// (demonsSouls.cpp); KYTY_COMPUTE_CHAIN_FENCE's programs stay fenced while they are on.
+		kyty_local_compute_chain_mode.store(std::strtoul(arg1, nullptr, 10) != 0 ? 1u : 0u, std::memory_order_relaxed);
+		std::printf("LIVE_CHAIN id=%" PRIu64 " mode=%u\n", id, kyty_local_compute_chain_mode.load(std::memory_order_relaxed));
 	} else if (cmd == "sleep" && n >= 2) {
 		std::this_thread::sleep_for(std::chrono::duration<double>(std::strtod(arg1, nullptr)));
 	} else if (cmd == "key" && n >= 2) {
