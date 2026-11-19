@@ -203,6 +203,12 @@ static bool EmulatedVertexBarycentrics(vk::PhysicalDevice physical_device, const
 	physical_device.getFeatures2(&features);
 	if (barycentric.fragmentShaderBarycentric == VK_TRUE || features.features.geometryShader != VK_TRUE) return false;
 	graphics.emulated_vertex_barycentrics = true;
+	// Only reported (not enabled): whether a passthrough ("fast") geometry shader could stand in for the emulation's
+	// (kayru/Barycentrics: ~15% below a plain shader on a GTX 1080 against ~2x for a geometry shader that writes the
+	// triangles again).
+	std::printf("Barycentric emulation: geometry shader; VK_NV_geometry_shader_passthrough %s\n",
+	            HasExtension(available, VK_NV_GEOMETRY_SHADER_PASSTHROUGH_EXTENSION_NAME) ? "available" : "not available");
+	std::fflush(stdout);
 	return true;
 }
 
