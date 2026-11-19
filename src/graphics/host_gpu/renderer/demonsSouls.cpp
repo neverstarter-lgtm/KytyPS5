@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 // KYTY_COMPUTE_CHAIN=0: no chains (10-14, the 8 GB laptop's GPU hangs at 2-2, a TDR in ~half of the 10-minute tours
 // with chains: none in 8 tours without them, at ~25% less fps there). Fencing only the culling, list-building or atomic
@@ -44,6 +45,43 @@ bool ComputeChains() {
 	}();
 	(void)reported;
 	return IsSupportedGame() && kyty_local_compute_chain_mode.load(std::memory_order_relaxed) != 0;
+}
+
+namespace {
+std::vector<uint64_t> ParseFencedPrograms() {
+	std::vector<uint64_t> fenced;
+	const char*           value = std::getenv("KYTY_COMPUTE_CHAIN_FENCE");
+	if (value == nullptr) return fenced;
+	std::string list(value);
+	size_t      start = 0;
+	while (start <= list.size()) {
+		size_t end = list.find_first_of(",; ", start);
+		if (end == std::string::npos) end = list.size();
+		std::string item = list.substr(start, end - start);
+		if (item.rfind("0x", 0) == 0 || item.rfind("0X", 0) == 0) item = item.substr(2);
+		if (!item.empty()) {
+			char*              tail = nullptr;
+			const uint64_t     hash = std::strtoull(item.c_str(), &tail, 16);
+			if (tail != nullptr && *tail == '\0' && hash != 0) fenced.push_back(hash);
+		}
+		start = end + 1;
+	}
+	return fenced;
+}
+} // namespace
+
+bool ComputeChainsFor(uint64_t shader_hash) {
+	if (!ComputeChains()) return false;
+	static const std::vector<uint64_t> fenced = [] {
+		auto list = ParseFencedPrograms();
+		if (!list.empty()) {
+			std::printf("Compute chains: on, %zu program(s) fenced (KYTY_COMPUTE_CHAIN_FENCE):", list.size());
+			for (const auto hash: list) std::printf(" %016llx", static_cast<unsigned long long>(hash));
+			std::printf("\n");
+		}
+		return list;
+	}();
+	return fenced.empty() || std::find(fenced.begin(), fenced.end(), shader_hash) == fenced.end();
 }
 
 // The engine's cs_memset32 shader (coredata/enginesupport/shaders/_ps5/cs_memset32) as the builds seen have it:
