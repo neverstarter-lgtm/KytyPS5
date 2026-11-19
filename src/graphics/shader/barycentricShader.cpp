@@ -10,6 +10,9 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string_view>
 #include <utility>
 
 namespace Libs::Graphics {
@@ -20,6 +23,19 @@ using ShaderRecompiler::Spirv::Builder;
 namespace IR = ShaderRecompiler::IR;
 
 constexpr uint32_t SpirvVersion15 = 0x00010500u;
+
+// KYTY_BARY_GS_TEST=lite (a measurement, not for play): the geometry shader leaves out the per-vertex parameters' arrays
+// of three values (the bulk of what it writes per vertex), the pixel shader then reading undefined values there (a wrong
+// picture). How much faster that runs bounds what a cheaper geometry shader (the passthrough one) could gain.
+bool GsTestLite() {
+	static const bool lite = [] {
+		const char* value = std::getenv("KYTY_BARY_GS_TEST");
+		const bool  on    = value != nullptr && std::string_view(value) == "lite";
+		if (on) std::printf("Barycentric emulation: KYTY_BARY_GS_TEST=lite, the per-vertex arrays left out (test only)\n");
+		return on;
+	}();
+	return lite;
+}
 
 template <typename T>
 constexpr uint32_t Word(T value) {
@@ -180,6 +196,9 @@ public:
 			}
 			for (size_t i = 0; i < plan.parameters.size(); i++) {
 				const auto& parameter = plan.parameters[i];
+				if (outputs[i] == 0) {
+					continue;
+				}
 				if (parameter.per_vertex) {
 					for (uint32_t other = 0; other < 3u; other++) {
 						Store(Access(ptr_output_vec4_float, outputs[i], Int(other)),
@@ -297,6 +316,10 @@ private:
 		outputs.resize(plan.parameters.size());
 		for (size_t i = 0; i < plan.parameters.size(); i++) {
 			const auto& parameter = plan.parameters[i];
+			if (parameter.per_vertex && GsTestLite()) {
+				outputs[i] = 0;
+				continue;
+			}
 			// (A per-vertex parameter's array takes three locations from `output_location`.)
 			outputs[i] = AddInterface(spv::StorageClass::Output,
 			                          parameter.per_vertex ? Array(vec4_float_type, 3u) : vec4_float_type);
