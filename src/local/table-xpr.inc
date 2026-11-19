@@ -4569,7 +4569,8 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1f, 4);
 	// Emission, as DispatchDirect's.
 	buffer.EndRendering();
-	const bool chain     = DemonsSouls::ComputeChains();
+	const bool chain     = DemonsSouls::ComputeChainsFor(
+	    (set->program != nullptr ? *set->program : *pair.programs[0]).shader_hash);
 	const auto vk_buffer = chain ? buffer.ChainHandle() : buffer.Handle();
 	// (As a draw's: the set's images as its last dispatch's transit left them, while no image changed since.)
 	auto&      dispatch_textures = m_context.GetTextureCache();
