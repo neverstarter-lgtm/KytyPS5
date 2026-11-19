@@ -28,6 +28,10 @@ bool IsSupportedGame();
 // Chains of dispatches with no barrier between them until the guest's own wait or cache action (these titles only).
 // KYTY_COMPUTE_CHAIN=0 (live kyty_local_compute_chain_mode): barriers around every dispatch, as for other games.
 bool ComputeChains();
+// ComputeChains() for one dispatch of this program: false for a program KYTY_COMPUTE_CHAIN_FENCE lists (hex hashes,
+// separated by commas: fe938d3a2d22b5c2,...), which then runs with barriers around it as without chains (the 10-18
+// test: fencing fe938d3a2d22b5c2 made the hangs rarer at 12% of an RTX 5090's frame rate, not 25%).
+bool ComputeChainsFor(uint64_t shader_hash);
 // The registers of a dispatch the linear copy shader reads: its user data, workgroup and thread-group inputs.
 struct LinearCopyDispatch {
 	std::span<const uint32_t> user_data;
