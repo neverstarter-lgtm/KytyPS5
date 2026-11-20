@@ -3291,7 +3291,14 @@ private:
 		uint64_t noted   = 0;
 	};
 	static constexpr size_t   HotReadsMax    = 8192; // 32 MiB locked at most (memory.cpp AllowHotReadLocks)
-	static constexpr uint64_t HotReadsKeepMs = 8000;
+	// KYTY_HOT_READS_KEEP_MS (default 8000): how long a page read back keeps no access after its last read fault before it
+	// gets its guard again. Pages the game reads back every few tens of seconds otherwise cycle through guards, and each
+	// guard fault is a window for another thread's stale read (read_guard_races).
+	static inline const uint64_t HotReadsKeepMs = [] {
+		const char* value = std::getenv("KYTY_HOT_READS_KEEP_MS");
+		const uint64_t ms = value != nullptr && *value != '\0' ? std::strtoull(value, nullptr, 10) : 0;
+		return ms != 0 ? ms : uint64_t {8000};
+	}();
 	bool LockHotBacking(uint8_t* backing) {
 		auto [it, inserted] = m_hot_locks.try_emplace(backing, 0);
 		if (inserted && VirtualLock(backing, 0x1000) == 0) {
