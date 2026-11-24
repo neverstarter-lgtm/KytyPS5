@@ -56,6 +56,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <atomic>
 #include <bit>
 #include <cmath>
