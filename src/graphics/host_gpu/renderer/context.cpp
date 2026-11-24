@@ -62,7 +62,7 @@ vk::CommandBuffer CommandBuffer::Handle() const {
 	return m_buffer;
 }
 
-// KYTY_CHAIN_EXEC_BARRIER (Pascal-Test): 1 = zwischen Kettenauftraegen nur eine Ausfuehrungs-Barriere (compute ->
+// KYTY_CHAIN_EXEC_BARRIER (Pascal-Test; 3 = Ausfuehrung bis alle Stufen, 4 = Speicher nur compute->compute): 1 = zwischen Kettenauftraegen nur eine Ausfuehrungs-Barriere (compute ->
 // compute, kein Speicher-/Cache-Abgleich); 2 = eine volle Speicher-Barriere wie ohne Ketten (Gegenprobe). Unset/0: wie
 // bisher. Trennt "Ueberlappung" von "veraltete Daten" bei den Ketten-Haengern.
 static uint32_t ChainExecBarrierMode() {
@@ -85,6 +85,15 @@ vk::CommandBuffer CommandBuffer::ChainHandle() const {
 			                         {}, 0, nullptr, 0, nullptr, 0, nullptr);
 		} else if (mode == 2) {
 			ShaderAccessBarrier(m_buffer, vk::PipelineStageFlagBits::eComputeShader);
+		} else if (mode == 3) { // Ausfuehrung compute -> alle Stufen, ohne Speicher-Abgleich
+			m_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eAllCommands,
+			                         {}, 0, nullptr, 0, nullptr, 0, nullptr);
+		} else if (mode == 4) { // Speicher-Abgleich nur compute -> compute (Shader-Lesen/Schreiben)
+			VulkanMemoryBarrier barrier {};
+			barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+			barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+			m_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
+			                         {}, 1, &barrier, 0, nullptr, 0, nullptr);
 		}
 	}
 	return m_buffer;
