@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <atomic>
 
 extern "C" {
@@ -60,10 +62,31 @@ vk::CommandBuffer CommandBuffer::Handle() const {
 	return m_buffer;
 }
 
+// KYTY_CHAIN_EXEC_BARRIER (Pascal-Test): 1 = zwischen Kettenauftraegen nur eine Ausfuehrungs-Barriere (compute ->
+// compute, kein Speicher-/Cache-Abgleich); 2 = eine volle Speicher-Barriere wie ohne Ketten (Gegenprobe). Unset/0: wie
+// bisher. Trennt "Ueberlappung" von "veraltete Daten" bei den Ketten-Haengern.
+static uint32_t ChainExecBarrierMode() {
+	static const uint32_t mode = [] {
+		const char* value = std::getenv("KYTY_CHAIN_EXEC_BARRIER");
+		const uint32_t m  = value != nullptr ? static_cast<uint32_t>(std::atoi(value)) : 0u;
+		if (m != 0) std::printf("Compute chains: barrier between chained dispatches, mode %u (KYTY_CHAIN_EXEC_BARRIER)\n", m);
+		return m;
+	}();
+	return mode;
+}
+
 vk::CommandBuffer CommandBuffer::ChainHandle() const {
 	if (kyty_local_speculate_mode.load(std::memory_order_relaxed) != 0) ++m_handle_requests; // (as Handle)
 	EXIT_IF(IsInvalid() || m_rendering);
 	FlushCopyRun();
+	if (m_compute_access_pending) {
+		if (const auto mode = ChainExecBarrierMode(); mode == 1) {
+			m_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
+			                         {}, 0, nullptr, 0, nullptr, 0, nullptr);
+		} else if (mode == 2) {
+			ShaderAccessBarrier(m_buffer, vk::PipelineStageFlagBits::eComputeShader);
+		}
+	}
 	return m_buffer;
 }
 
