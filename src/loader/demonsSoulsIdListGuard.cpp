@@ -64,6 +64,118 @@ void KYTY_SYSV_ABI Skipped(uint64_t offset, uint64_t id, uint64_t index, uint64_
 	            static_cast<unsigned long long>(offset), skips);
 	std::fflush(stdout);
 }
+
+// 01.005.000 eboot+0xa11480, a second job worker loop over the same kind of ids (11-25: runs 101 and 110, both after
+// ~5 and ~26 minutes, the second right after "bound as null"): records of 0xec bytes (count in rdi) are searched for the
+// nearest one (+8 a distance, +0x48 a flag); a record's first u32 indexes an array of 24-byte entries (rdx) whose id
+// (+4) names a table (rsi) entry, its object array (+0xb0) and an object. A record whose index was garbage
+// (0x46xxxxxx..) read past the array: "mov r8d, [rdx + r8 * 8 + 4]" at +0x24 faulted (0x8d6312174, 0xfbe893c84).
+//   add rcx, 0xec; dec rdi; je <end>; vmovss xmm1, [rcx + 8]; vucomiss xmm0, xmm1; jbe <top>; cmp dword [rcx + 0x48], 0;
+//   je <top>;                                                                       (+0x1d: the site)
+//   mov r8d, [rcx]; lea r8, [r8 + r8 * 2]; mov r8d, [rdx + r8 * 8 + 4]; bextr r9d, r8d, r11d; movzx r8d, r8w;
+//   mov r9, [rsi + r9 * 8]; mov r9, [r9 + 0xb0]; cmp qword [r9 + r8 * 8], 0; je <top>;
+//   vmovaps xmm0, xmm1; mov r13, rcx; jmp <top>                                      (+0x44: back)
+// Here a record whose index is 0x100000 or more (24 MiB of entries; both crashes had ~1e9), or whose table entry or
+// object array lies outside the guest's user range, is passed over like one with no object (the loop's own je <top>).
+constexpr const char* RecordLoop =
+    "48 81 c1 ec 00 00 00 48 ff cf 74 ?? c5 fa 10 49 08 c5 f8 2e c1 76 e9 83 79 48 00 74 e3 44 8b 01 4f 8d 04 40 46 8b 44 "
+    "c2 04 c4 42 20 f7 c8 45 0f b7 c0 4e 8b 0c ce 4d 8b 89 b0 00 00 00 4b 83 3c c1 00 74 bc c5 f8 28 c1 49 89 cd eb b3";
+constexpr uint64_t RecordSiteOffset = 0x1d, RecordBackOffset = 0x44, RecordCaveOffset = 0x8000000 + 14 * PageSize;
+constexpr uint32_t RecordSiteSize = RecordBackOffset - RecordSiteOffset; // 39 bytes, nothing jumps into them
+constexpr uint32_t RecordIndexLimit = 0x100000;
+
+std::atomic<uint32_t> g_record_skips {0};
+
+void KYTY_SYSV_ABI RecordSkipped(uint64_t offset, uint64_t index, uint64_t record) {
+	const auto skips = g_record_skips.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (skips > 16 && (skips & (skips - 1)) != 0) return;
+	std::printf("Demon's Souls id list guard: record 0x%llx has index 0x%08llx or an invalid table entry; passed over at "
+	            "eboot+0x%llx (%u so far)\n",
+	            static_cast<unsigned long long>(record), static_cast<unsigned long long>(index & 0xffffffffu),
+	            static_cast<unsigned long long>(offset), skips);
+	std::fflush(stdout);
+}
+
+void InstallRecordGuard(Program* program) {
+#if defined(__x86_64__) || defined(_M_X64)
+	if (program->mapped_size > RecordCaveOffset || program->base_vaddr > UINT64_MAX - RecordCaveOffset - PageSize) return;
+	const auto loop = GuestCode::FindUnique(*program, GuestCode::Pattern(RecordLoop));
+	if (!loop) return;
+	const uint64_t top = *loop, site = *loop + RecordSiteOffset, back = *loop + RecordBackOffset;
+	const auto     requested = program->base_vaddr + RecordCaveOffset;
+	const auto     allocated = Libs::LibKernel::Memory::AllocateRuntimeMemory(
+        requested, PageSize, Common::VirtualMemory::Mode::ExecuteReadWrite, "demons_souls_record_guard", true);
+	if (allocated != requested) {
+		if (allocated) Libs::LibKernel::Memory::FreeGuestMemory(allocated, PageSize);
+		return;
+	}
+	using namespace Xbyak::util;
+	Xbyak::ClearError();
+	Xbyak::CodeGenerator c(PageSize, reinterpret_cast<void*>(allocated));
+	constexpr uint8_t save_fp[] {0x48, 0x0f, 0xae, 0x04, 0x24}; // FXSAVE64 [rsp]
+	Xbyak::Label      bad, limit;
+	auto              check = [&](const Xbyak::Reg64& reg) {
+        c.cmp(reg, MinPointer);
+        c.jb(bad, Xbyak::CodeGenerator::T_NEAR);
+        c.cmp(reg, ptr[rip + limit]);
+        c.jae(bad, Xbyak::CodeGenerator::T_NEAR);
+	};
+	// The moved instructions, the index and both pointers checked (flags are dead at <top> and after the je).
+	c.mov(r8d, dword[rcx]);
+	c.cmp(r8d, RecordIndexLimit);
+	c.jae(bad, Xbyak::CodeGenerator::T_NEAR);
+	c.lea(r8, ptr[r8 + r8 * 2]);
+	c.mov(r8d, dword[rdx + r8 * 8 + 4]);
+	c.bextr(r9d, r8d, r11d);
+	c.movzx(r8d, r8w);
+	c.mov(r9, ptr[rsi + r9 * 8]);
+	check(r9);
+	c.mov(r9, ptr[r9 + 0xb0]);
+	check(r9);
+	c.cmp(qword[r9 + r8 * 8], 0);
+	c.je(reinterpret_cast<const void*>(top));
+	c.jmp(reinterpret_cast<const void*>(back), Xbyak::CodeGenerator::T_NEAR);
+	// Passed over: printed (registers and FP state kept; below the red zone, on a realigned stack), then <top>.
+	c.L(bad);
+	c.lea(rsp, ptr[rsp - 128]);
+	for (const auto& reg: {rax, rcx, rdx, rsi, rdi, r8, r9, r10, r11, rbx})
+		c.push(reg);
+	c.mov(rdx, rcx);
+	c.mov(esi, dword[rcx]);
+	c.mov(rdi, site - program->base_vaddr);
+	c.mov(rbx, rsp);
+	c.and_(rsp, -16);
+	c.sub(rsp, 512);
+	c.db(save_fp, sizeof(save_fp));
+	c.mov(rax, reinterpret_cast<uint64_t>(&RecordSkipped));
+	c.call(rax);
+	c.fxrstor64(ptr[rsp]);
+	c.mov(rsp, rbx);
+	for (const auto& reg: {rbx, r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax})
+		c.pop(reg);
+	c.lea(rsp, ptr[rsp + 128]);
+	c.jmp(reinterpret_cast<const void*>(top), Xbyak::CodeGenerator::T_NEAR);
+	c.align(8);
+	c.L(limit);
+	c.dq(MaxPointer);
+	c.ready();
+	if (Xbyak::GetError() || !Common::VirtualMemory::FlushInstructionCache(allocated, c.getSize()) ||
+	    !Libs::LibKernel::Memory::ProtectGuestMemory(allocated, PageSize, Common::VirtualMemory::Mode::ExecuteRead, nullptr)) {
+		Libs::LibKernel::Memory::FreeGuestMemory(allocated, PageSize);
+		return;
+	}
+	uint8_t code[RecordSiteSize];
+	std::memset(code, 0xcc, sizeof(code));
+	code[0]                 = 0xe9;
+	const auto displacement = static_cast<int32_t>(allocated - (site + 5));
+	std::memcpy(code + 1, &displacement, sizeof(displacement));
+	std::memcpy(reinterpret_cast<void*>(site), code, sizeof(code));
+	Common::VirtualMemory::FlushInstructionCache(site, sizeof(code));
+	std::printf("Demon's Souls id list guard: installed (the record loop at eboot+0x%llx passes over a record with a bad "
+	            "index or table entry)\n",
+	            static_cast<unsigned long long>(site - program->base_vaddr));
+#endif
+}
 } // namespace
 
 void Install(Program* program) {
@@ -166,6 +278,7 @@ void Install(Program* program) {
 	std::printf("Demon's Souls id list guard: installed (the id list loop at eboot+0x%llx skips an id with a null or "
 	            "invalid entry, array or object)\n",
 	            static_cast<unsigned long long>(site - program->base_vaddr));
+	if (range) InstallRecordGuard(program);
 #endif
 }
 
