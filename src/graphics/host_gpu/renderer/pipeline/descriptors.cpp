@@ -1358,6 +1358,38 @@ bool RenderExecutor::AcquirableImage(const TextureBinding& binding) {
 	       (image->info.data.Empty() || (image->registered && !image->depth_id));
 }
 
+// KYTY_REBIND_SHARE_ALIAS=1 (Pascal-Test): ein Bild, das sich mit einem anderen derselben Bindung an derselben Adresse
+// gegenseitig verdraengt ("does not settle"), bekommt statt des Null-Bilds das andere, gehaltene Bild gleicher Dimension.
+// Hintergrund: GTX 1080, Absturz "Device fault ... write invalid" direkt nach "bound as null" (d5b8994b4a5343d6).
+template <typename Images, typename Program, typename Acquirable>
+static bool ShareAliasedImage(Images& images, uint32_t i, const Program& program, const Acquirable& acquirable) {
+	static const bool on = [] {
+		const char* value = std::getenv("KYTY_REBIND_SHARE_ALIAS");
+		const bool  v     = value != nullptr && value[0] == '1';
+		if (v) std::printf("RebindImages: KYTY_REBIND_SHARE_ALIAS on (aliased image instead of the null image)\n");
+		return v;
+	}();
+	if (!on) return false;
+	const auto& mine = images[i].desc.info;
+	for (uint32_t k = 0; k < images.size(); k++) {
+		if (k == i || !acquirable(images[k])) continue;
+		const auto& other = images[k].desc.info;
+		if (other.data.Empty() || mine.data.address != other.data.address) continue;
+		if (program.info.images[k].dimension != program.info.images[i].dimension) continue;
+		if (program.info.images[k].written != program.info.images[i].written) continue;
+		images[i] = images[k];
+		static std::atomic<uint32_t> reports {0};
+		const auto n = reports.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (n <= 8 || (n & (n - 1)) == 0) {
+			std::printf("RebindImages: shader 0x%016" PRIx64 " image %u does not settle, bound as image %u (shared alias #%u)\n",
+			            program.shader_hash, i, k, n);
+			std::fflush(stdout);
+		}
+		return true;
+	}
+	return false;
+}
+
 void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
@@ -1464,7 +1496,9 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 				if (auto* old_image = texture_cache.m_slot_images.try_get(images[i].image_id)) {
 					old_image->binding = {};
 				}
-				if (null) {
+				if (null && ShareAliasedImage(images, i, program, acquirable)) {
+					// (KYTY_REBIND_SHARE_ALIAS=1: the aliased image that holds, in place of the null image)
+				} else if (null) {
 					report();
 					static std::atomic<uint32_t> reports {0};
 					if (reports.fetch_add(1, std::memory_order_relaxed) < 16)
