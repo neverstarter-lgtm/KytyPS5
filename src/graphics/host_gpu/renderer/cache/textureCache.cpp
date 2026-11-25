@@ -2674,7 +2674,9 @@ void TextureCache::InitializeImage(ImageId id, bool window) {
 			LiveCounters::Add(LiveCounters::FullUploads);
 			LiveCounters::Add(LiveCounters::FullUploadBytes, image.info.data.size);
 			static const bool log_uploads = std::getenv("KYTY_UPLOAD_LOG") != nullptr;
-			if (log_uploads) {
+			static std::atomic<uint32_t> huge_uploads {0};
+			if (log_uploads || (image.info.data.size >= (uint64_t {512} << 20u) &&
+			                    huge_uploads.fetch_add(1, std::memory_order_relaxed) < 32)) {
 				std::printf("[tsc %llu] UPLOAD %s addr=0x%llx size=0x%llx fmt=%u %ux%u layers=%u levels=%u tile=%u "
 				            "target=%d usage=%d%d%d%d gpu=%d serial=%llu partial_fail=%s refill=%s\n",
 				            static_cast<unsigned long long>(__rdtsc()), kind,
@@ -4313,6 +4315,33 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, bool may_fai
 	if (desc.info.data.Empty()) {
 		std::scoped_lock lock {m_lock};
 		return GetNullImage(desc);
+	}
+	// A texture or storage image far larger than any the game makes is a garbage descriptor (11-25, run 118 on a GTX
+	// 1080: a frame uploaded 2.87 GB of image data in one go after a run of "bound as null" rebinds; the next submit lost
+	// the device). It is bound as a null image instead (KYTY_MAX_TEXTURE_MB, default 1024; 0: no limit). The largest the
+	// game makes: 352 MiB (256 layers, 9 levels).
+	if (desc.type == BindingType::Texture || desc.type == BindingType::Storage) {
+		static const uint64_t limit = []() -> uint64_t {
+			const char* v = std::getenv("KYTY_MAX_TEXTURE_MB");
+			return (v == nullptr ? uint64_t {1024} : std::strtoull(v, nullptr, 10)) << 20u;
+		}();
+		if (limit != 0 && desc.info.data.size > limit) {
+			static std::atomic<uint32_t> refused {0};
+			const auto count = refused.fetch_add(1, std::memory_order_relaxed) + 1;
+			if (count <= 16 || (count & (count - 1)) == 0) {
+				std::printf("TextureCache: %s image addr=0x%llx size=0x%llx fmt=%u %ux%ux%u levels=%u layers=%u tile=%u over "
+				            "the %llu MiB limit: bound as null (%u so far)\n",
+				            desc.type == BindingType::Texture ? "texture" : "storage",
+				            static_cast<unsigned long long>(desc.info.data.address),
+				            static_cast<unsigned long long>(desc.info.data.size), static_cast<uint32_t>(desc.info.guest_format),
+				            desc.info.extent.width, desc.info.extent.height, desc.info.extent.depth,
+				            desc.info.resources.levels, desc.info.resources.layers,
+				            static_cast<uint32_t>(desc.info.tile_mode), static_cast<unsigned long long>(limit >> 20u), count);
+				std::fflush(stdout);
+			}
+			std::scoped_lock lock {m_lock};
+			return GetNullImage(desc);
+		}
 	}
 
 	ImageId result {};
