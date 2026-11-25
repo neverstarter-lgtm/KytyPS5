@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #ifndef XBYAK_NO_EXCEPTION
@@ -31,6 +32,9 @@
 namespace Loader::DemonsSoulsIdListGuard {
 namespace {
 constexpr uint64_t PageSize = 0x4000, CaveOffset = 0x8000000 + 12 * PageSize;
+// The guest's user range (kernel/memoryAddressSpace.inc: HOST_USER_MAX 0xfbffffffff); nothing is mapped below 64 KiB.
+constexpr uint32_t MinPointer = 0x10000;
+constexpr uint64_t MaxPointer = 0xfc00000000ull;
 
 // 01.005.000 eboot+0xa10126, the loop's end and its body up to the object's load:
 //   mov rax, [rbp - 0x78]; mov [r12 - 0x14], ecx; mov [r12 - 0x10], edx;
@@ -53,8 +57,8 @@ std::atomic<uint32_t> g_skips {0};
 void KYTY_SYSV_ABI Skipped(uint64_t offset, uint64_t id, uint64_t index, uint64_t count, uint64_t list) {
 	const auto skips = g_skips.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (skips > 16 && (skips & (skips - 1)) != 0) return;
-	std::printf("Demon's Souls id list guard: id 0x%08llx (%llu of %llu in the list at 0x%llx) names a null entry, array or "
-	            "object; skipped at eboot+0x%llx (%u so far)\n",
+	std::printf("Demon's Souls id list guard: id 0x%08llx (%llu of %llu in the list at 0x%llx) names a null or invalid "
+	            "entry, array or object; skipped at eboot+0x%llx (%u so far)\n",
 	            static_cast<unsigned long long>(id & 0xffffffffu), static_cast<unsigned long long>(index),
 	            static_cast<unsigned long long>(count), static_cast<unsigned long long>(list),
 	            static_cast<unsigned long long>(offset), skips);
@@ -81,27 +85,41 @@ void Install(Program* program) {
 	Xbyak::ClearError();
 	Xbyak::CodeGenerator c(PageSize, reinterpret_cast<void*>(allocated));
 	constexpr uint8_t save_fp[] {0x48, 0x0f, 0xae, 0x04, 0x24}; // FXSAVE64 [rsp]
-	Xbyak::Label      bad;
+	Xbyak::Label      bad, limit;
+	// A pointer is used only if it lies in the guest's user range (KYTY_ID_LIST_GUARD_RANGE=0: null checks only, as before).
+	// The list is a GPU result written back each frame; on Pascal (11-25, runs 102 and 109) a list id named a live table
+	// entry whose pointers were garbage, not null (rax 0xbc802180c0b95555, rcx 0x0004a3ac00000441): the null checks let it
+	// through and the moved loads at cave +0x0d / +0x3d faulted on a non-canonical address.
+	const bool range = []() {
+		const char* v = std::getenv("KYTY_ID_LIST_GUARD_RANGE");
+		return v == nullptr || v[0] != '0';
+	}();
+	auto check = [&](const Xbyak::Reg64& reg) {
+		if (range) {
+			c.cmp(reg, MinPointer); // (null included)
+			c.jb(bad, Xbyak::CodeGenerator::T_NEAR);
+			c.cmp(reg, ptr[rip + limit]);
+			c.jae(bad, Xbyak::CodeGenerator::T_NEAR);
+		} else {
+			c.test(reg, reg);
+			c.jz(bad, Xbyak::CodeGenerator::T_NEAR);
+		}
+	};
 	// The moved instructions, each pointer checked before its use.
 	c.mov(rax, ptr[rax + rdx * 8]); // the table's entry
-	c.test(rax, rax);
-	c.jz(bad, Xbyak::CodeGenerator::T_NEAR);
+	check(rax);
 	c.mov(rcx, ptr[rax + 0xb0]); // its object array
 	c.mov(rax, ptr[rax + 0xe0]); // its index array
-	c.test(rcx, rcx);
-	c.jz(bad, Xbyak::CodeGenerator::T_NEAR);
-	c.test(rax, rax);
-	c.jz(bad, Xbyak::CodeGenerator::T_NEAR);
+	check(rcx);
+	check(rax);
 	c.mov(r13d, dword[rax + rsi * 4]);
 	c.mov(ptr[rbp - 0x58], rax);
 	c.mov(eax, r13d);
 	c.and_(eax, 0xffffff);
 	c.mov(rax, ptr[rcx + rax * 8]); // the object
-	c.test(rax, rax);
-	c.jz(bad, Xbyak::CodeGenerator::T_NEAR);
+	check(rax);
 	c.mov(rcx, ptr[rax + 0x20]);
-	c.test(rcx, rcx);
-	c.jz(bad, Xbyak::CodeGenerator::T_NEAR);
+	check(rcx);
 	c.jmp(reinterpret_cast<const void*>(back));
 	// Skipped: printed (registers and FP state kept; below the red zone, on a realigned stack), then the next id, as the
 	// loop's own increment has it (rax: this id's index, kept at rbp - 0x78; rbx, rdi, r14 unchanged since the loop's top).
@@ -127,6 +145,9 @@ void Install(Program* program) {
 	c.lea(rsp, ptr[rsp + 128]);
 	c.mov(rax, ptr[rbp - 0x78]);
 	c.jmp(reinterpret_cast<const void*>(next));
+	c.align(8);
+	c.L(limit);
+	c.dq(MaxPointer);
 	c.ready();
 	if (Xbyak::GetError() || !Common::VirtualMemory::FlushInstructionCache(allocated, c.getSize()) ||
 	    !Libs::LibKernel::Memory::ProtectGuestMemory(allocated, PageSize, Common::VirtualMemory::Mode::ExecuteRead, nullptr)) {
@@ -142,8 +163,8 @@ void Install(Program* program) {
 	std::memcpy(code + 1, &displacement, sizeof(displacement));
 	std::memcpy(reinterpret_cast<void*>(site), code, sizeof(code));
 	Common::VirtualMemory::FlushInstructionCache(site, sizeof(code));
-	std::printf("Demon's Souls id list guard: installed (the id list loop at eboot+0x%llx skips an id with a null entry, "
-	            "array or object)\n",
+	std::printf("Demon's Souls id list guard: installed (the id list loop at eboot+0x%llx skips an id with a null or "
+	            "invalid entry, array or object)\n",
 	            static_cast<unsigned long long>(site - program->base_vaddr));
 #endif
 }
