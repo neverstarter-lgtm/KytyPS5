@@ -904,6 +904,18 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			return true;
 		}
 	}
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	// A load in the Demon's Souls id list guard that hit memory with no access (garbage that passed its range checks):
+	// the guard's skip path runs instead.
+	if (info->type == Common::HostException::ExceptionType::AccessViolation &&
+	    info->access_violation_type == Common::HostException::AccessViolationType::Read && info->native_context != nullptr) {
+		if (const auto target = DemonsSoulsIdListGuard::RecoveryTarget(info->exception_address, info->access_violation_vaddr);
+		    target != 0) {
+			static_cast<CONTEXT*>(info->native_context)->Rip = target;
+			return true;
+		}
+	}
+#endif
 	// Report whatever guest context can be read safely before terminating: which guest thread
 	// faulted, the register file, the faulting code bytes and the top of its stack.
 	{

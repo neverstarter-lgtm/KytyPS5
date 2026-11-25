@@ -54,6 +54,15 @@ constexpr uint32_t SiteSize = BackOffset - SiteOffset; // 42 bytes, nothing jump
 
 std::atomic<uint32_t> g_skips {0};
 
+// The checked parts of both caves ([begin, bad)) and their skip paths: a load there that faults (11-25, run 115: a list
+// of 1024 float values, not ids, passed the range checks and a load at cave +0x6e read a reserved, uncommitted page at
+// 0x905b6d1c8 inside the guest's range) goes to the skip path instead of ending the emulator (RecoveryTarget).
+struct Cave {
+	std::atomic<uint64_t> begin {0}, bad {0};
+};
+Cave                  g_list_cave, g_record_cave;
+std::atomic<uint32_t> g_recoveries {0};
+
 void KYTY_SYSV_ABI Skipped(uint64_t offset, uint64_t id, uint64_t index, uint64_t count, uint64_t list) {
 	const auto skips = g_skips.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (skips > 16 && (skips & (skips - 1)) != 0) return;
@@ -164,6 +173,8 @@ void InstallRecordGuard(Program* program) {
 		Libs::LibKernel::Memory::FreeGuestMemory(allocated, PageSize);
 		return;
 	}
+	g_record_cave.bad.store(reinterpret_cast<uint64_t>(bad.getAddress()), std::memory_order_relaxed);
+	g_record_cave.begin.store(allocated, std::memory_order_release);
 	uint8_t code[RecordSiteSize];
 	std::memset(code, 0xcc, sizeof(code));
 	code[0]                 = 0xe9;
@@ -266,6 +277,8 @@ void Install(Program* program) {
 		Libs::LibKernel::Memory::FreeGuestMemory(allocated, PageSize);
 		return;
 	}
+	g_list_cave.bad.store(reinterpret_cast<uint64_t>(bad.getAddress()), std::memory_order_relaxed);
+	g_list_cave.begin.store(allocated, std::memory_order_release);
 	// Installation occurs before module initializers or guest threads run; program memory is writable to the host.
 	// (The bytes after the jump are never reached: nothing jumps into the moved instructions.)
 	uint8_t code[SiteSize];
@@ -280,6 +293,23 @@ void Install(Program* program) {
 	            static_cast<unsigned long long>(site - program->base_vaddr));
 	if (range) InstallRecordGuard(program);
 #endif
+}
+
+uint64_t RecoveryTarget(uint64_t pc, uint64_t address) {
+	for (const Cave* cave: {&g_list_cave, &g_record_cave}) {
+		const auto begin = cave->begin.load(std::memory_order_acquire);
+		const auto bad   = cave->bad.load(std::memory_order_relaxed);
+		if (begin == 0 || pc < begin || pc >= bad) continue;
+		const auto recoveries = g_recoveries.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (recoveries <= 16 || (recoveries & (recoveries - 1)) == 0) {
+			std::printf("Demon's Souls id list guard: a load at cave +0x%llx faulted (address 0x%016llx); skipped as an "
+			            "invalid entry (%u so far)\n",
+			            static_cast<unsigned long long>(pc - begin), static_cast<unsigned long long>(address), recoveries);
+			std::fflush(stdout);
+		}
+		return bad;
+	}
+	return 0;
 }
 
 } // namespace Loader::DemonsSoulsIdListGuard
