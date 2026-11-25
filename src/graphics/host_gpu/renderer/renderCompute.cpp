@@ -32,6 +32,9 @@
 #include "native-preparation-state.h"
 #include "live-counters.h"
 
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 #include <xxhash.h>
 #include "xpr-capture.h"
@@ -56,6 +59,28 @@
 #include <span>
 #include <unordered_map>
 #include <vector>
+
+// KYTY_CHAIN_ARGS_BARRIER=1 (Pascal-Test): auch innerhalb einer Compute-Kette die Barriere fuer
+// Indirect-Argumente setzen (compute -> DrawIndirect, ShaderWrite -> IndirectCommandRead, nur die 12 Bytes).
+// Ohne sie kann ein Ketten-dispatchIndirect veraltete Gruppenanzahlen lesen (vermutete Ursache der Ketten-Haenger).
+static bool ChainArgsBarrier() {
+	static const bool on = [] {
+		const char* value = std::getenv("KYTY_CHAIN_ARGS_BARRIER");
+		const bool  v     = value != nullptr && std::atoi(value) != 0;
+		if (v) std::printf("Compute chains: indirect-args barrier inside chains (KYTY_CHAIN_ARGS_BARRIER)\n");
+		return v;
+	}();
+	return on;
+}
+
+static void NoteChainArgsBarrier(uint64_t shader_hash) {
+	static std::atomic<uint64_t> count {0};
+	const uint64_t n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (n <= 8 || (n & (n - 1)) == 0) {
+		std::printf("Compute chains: args barrier #%llu before indirect dispatch %016llx\n",
+		            static_cast<unsigned long long>(n), static_cast<unsigned long long>(shader_hash));
+	}
+}
 
 extern volatile std::atomic<uint32_t> kyty_local_fill_clear_mode; // (textureCache.cpp)
 
@@ -1227,8 +1252,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		args_barrier.buffer              = indirect_buffer;
 		args_barrier.offset              = indirect_offset;
 		args_barrier.size                = 3u * sizeof(uint32_t);
-		if (!continues_chain) {
-			vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		if (!continues_chain || ChainArgsBarrier()) {
+			if (continues_chain) NoteChainArgsBarrier(program.shader_hash);
+			vk_buffer.pipelineBarrier(continues_chain ? vk::PipelineStageFlags {vk::PipelineStageFlagBits::eComputeShader}
+			                                          : vk::PipelineStageFlags {vk::PipelineStageFlagBits::eAllCommands},
 			                          vk::PipelineStageFlagBits::eDrawIndirect,
 			                          vk::DependencyFlags {}, 0, nullptr, 1, &args_barrier, 0,
 			                          nullptr);
