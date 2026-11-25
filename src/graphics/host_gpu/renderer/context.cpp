@@ -62,7 +62,7 @@ vk::CommandBuffer CommandBuffer::Handle() const {
 	return m_buffer;
 }
 
-// KYTY_CHAIN_EXEC_BARRIER (Pascal-Test; 3 = Ausfuehrung bis alle Stufen, 4 = Speicher nur compute->compute, 5/6/7 s.u.): 1 = zwischen Kettenauftraegen nur eine Ausfuehrungs-Barriere (compute ->
+// KYTY_CHAIN_EXEC_BARRIER (Pascal-Test; 3 = Ausfuehrung bis alle Stufen, 4 = Speicher nur compute->compute, 5-9 s.u.): 1 = zwischen Kettenauftraegen nur eine Ausfuehrungs-Barriere (compute ->
 // compute, kein Speicher-/Cache-Abgleich); 2 = eine volle Speicher-Barriere wie ohne Ketten (Gegenprobe). Unset/0: wie
 // bisher. Trennt "Ueberlappung" von "veraltete Daten" bei den Ketten-Haengern.
 static uint32_t ChainExecBarrierMode() {
@@ -108,6 +108,22 @@ vk::CommandBuffer CommandBuffer::ChainHandle() const {
 			}
 			m_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, dst_stages, {}, 1, &barrier, 0, nullptr,
 			                         0, nullptr);
+		} else if (mode == 8) {
+			// 8 = wie 2, aber Quelle nur ShaderWrite (prueft, ob die Lese-Seite der Quelle zaehlt)
+			VulkanMemoryBarrier barrier {};
+			barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+			barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+			m_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eAllCommands,
+			                         {}, 1, &barrier, 0, nullptr, 0, nullptr);
+		} else if (mode == 9) {
+			// 9 = wie 2 (ShaderRead|ShaderWrite -> MemoryRead|MemoryWrite), aber Ziel nur compute + DrawIndirect
+			// (prueft, ob Grafik-/Transfer-Stufen innerhalb der Kette die Daten brauchen)
+			VulkanMemoryBarrier barrier {};
+			barrier.srcAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+			barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+			m_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+			                         vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
+			                         {}, 1, &barrier, 0, nullptr, 0, nullptr);
 		}
 	}
 	return m_buffer;
