@@ -39,6 +39,9 @@
 #include <limits>
 #include <span>
 #include <vector>
+#include <cstdlib>
+#include <string>
+#include <utility>
 
 #ifdef min
 #undef min
@@ -1408,6 +1411,50 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	// ended a load at 1-1 with "texture requires rediscovery"). Views of aliased memory that the texture cache
 	// cannot keep as one image take each other's away for ever (the Shrine, 10-05): past half the passes, an
 	// image that still does not hold is bound as a null image.
+	// KYTY_FORCE_NULL_IMAGE=hash:index;... (Pascal-Test): das Bild `index` dieses Shaders wird bei jedem Auftrag durch
+	// das Null-Bild ersetzt, wie RebindImages es nach "does not settle" tut. Prueft, ob diese Ersatzbindung allein den
+	// "Graphics TEX Exception: TEX LAYOUT"-Absturz einer GTX 1080 ausloest (Session 24.11., Shader d5b8994b4a5343d6).
+	static const std::vector<std::pair<uint64_t, uint32_t>> forced_null = [] {
+		std::vector<std::pair<uint64_t, uint32_t>> list;
+		const char* value = std::getenv("KYTY_FORCE_NULL_IMAGE");
+		if (value == nullptr) return list;
+		std::string text(value);
+		for (size_t at = 0; at < text.size();) {
+			size_t end = text.find_first_of(";, ", at);
+			if (end == std::string::npos) end = text.size();
+			const auto item  = text.substr(at, end - at);
+			const auto colon = item.find(':');
+			if (colon != std::string::npos) {
+				auto hash_text = item.substr(0, colon);
+				if (hash_text.rfind("0x", 0) == 0) hash_text = hash_text.substr(2);
+				const uint64_t hash  = std::strtoull(hash_text.c_str(), nullptr, 16);
+				const auto     index = static_cast<uint32_t>(std::strtoul(item.c_str() + colon + 1, nullptr, 10));
+				if (hash != 0) list.emplace_back(hash, index);
+			}
+			at = end + 1;
+		}
+		for (const auto& [hash, index]: list)
+			std::printf("RebindImages: KYTY_FORCE_NULL_IMAGE shader 0x%016" PRIx64 " image %u (test)\n", hash, index);
+		std::fflush(stdout);
+		return list;
+	}();
+	for (const auto& [hash, index]: forced_null) {
+		if (hash != program.shader_hash || index >= images.size()) continue;
+		if (auto* old_image = texture_cache.m_slot_images.try_get(images[index].image_id)) old_image->binding = {};
+		const auto& resource = program.info.images[index];
+		auto        desc     = NullTextureDesc(resource, resource.written ? TextureCache::BindingType::Storage
+		                                                                  : TextureCache::BindingType::Texture);
+		const auto  id       = texture_cache.FindImage(desc);
+		images[index]        = {id, nullptr, std::move(desc)};
+		BindImage(images[index].image_id, images[index].desc.type == TextureCache::BindingType::Storage);
+		static std::atomic<uint32_t> forced_reports {0};
+		const auto n = forced_reports.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (n <= 4 || (n & (n - 1)) == 0) {
+			std::printf("RebindImages: forced null #%u shader 0x%016" PRIx64 " image %u (dim %u, %s)\n", n, hash, index,
+			            static_cast<uint32_t>(resource.dimension), resource.written ? "storage" : "sampled");
+			std::fflush(stdout);
+		}
+	}
 	for (uint32_t attempt = 0;; ++attempt) {
 		for (uint32_t pass = 0; !std::ranges::all_of(images, acquirable); ++pass) {
 			if (pass + attempt == 16) EXIT("RebindImages: the images of a binding do not settle\n");
