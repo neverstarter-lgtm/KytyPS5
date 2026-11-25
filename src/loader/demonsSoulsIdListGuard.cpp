@@ -53,6 +53,7 @@ constexpr uint64_t NextOffset = 0x0e, SiteOffset = 0x46, BackOffset = 0x70;
 constexpr uint32_t SiteSize = BackOffset - SiteOffset; // 42 bytes, nothing jumps into them
 
 std::atomic<uint32_t> g_skips {0};
+bool                  g_drop_rest = false;
 
 // The checked parts of both caves ([begin, bad)) and their skip paths: a load there that faults (11-25, run 115: a list
 // of 1024 float values, not ids, passed the range checks and a load at cave +0x6e read a reserved, uncommitted page at
@@ -67,10 +68,10 @@ void KYTY_SYSV_ABI Skipped(uint64_t offset, uint64_t id, uint64_t index, uint64_
 	const auto skips = g_skips.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (skips > 16 && (skips & (skips - 1)) != 0) return;
 	std::printf("Demon's Souls id list guard: id 0x%08llx (%llu of %llu in the list at 0x%llx) names a null or invalid "
-	            "entry, array or object; skipped at eboot+0x%llx (%u so far)\n",
+	            "entry, array or object; skipped at eboot+0x%llx (%u so far)%s\n",
 	            static_cast<unsigned long long>(id & 0xffffffffu), static_cast<unsigned long long>(index),
 	            static_cast<unsigned long long>(count), static_cast<unsigned long long>(list),
-	            static_cast<unsigned long long>(offset), skips);
+	            static_cast<unsigned long long>(offset), skips, g_drop_rest ? ", the rest of the list dropped" : "");
 	std::fflush(stdout);
 }
 
@@ -217,6 +218,12 @@ void Install(Program* program) {
 		const char* v = std::getenv("KYTY_ID_LIST_GUARD_RANGE");
 		return v == nullptr || v[0] != '0';
 	}();
+	// One bad id means the whole list is a garbage readback: its other ids are dropped too (KYTY_ID_LIST_GUARD_DROP=0: only
+	// the bad id is skipped, as before).
+	const bool drop_rest = range && []() {
+		const char* v = std::getenv("KYTY_ID_LIST_GUARD_DROP");
+		return v == nullptr || v[0] != '0';
+	}();
 	auto check = [&](const Xbyak::Reg64& reg) {
 		if (range) {
 			c.cmp(reg, MinPointer); // (null included)
@@ -266,7 +273,15 @@ void Install(Program* program) {
 	for (const auto& reg: {rbx, r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax})
 		c.pop(reg);
 	c.lea(rsp, ptr[rsp + 128]);
-	c.mov(rax, ptr[rbp - 0x78]);
+	if (drop_rest) {
+		// The rest of the list is dropped: the loop goes on as after its last id (rax = r14 - 1 at the increment, as kept at
+		// rbp - 0x78). 11-25, run 119: a list of float values had 519 ids skipped one by one, then one passed every check
+		// and the code after the moved part read a null child (eboot+0xa1029d, cmp byte [r15 + 0x6c], 0xb with r15 0).
+		c.lea(rax, ptr[r14 - 1]);
+		c.mov(ptr[rbp - 0x78], rax);
+	} else {
+		c.mov(rax, ptr[rbp - 0x78]);
+	}
 	c.jmp(reinterpret_cast<const void*>(next));
 	c.align(8);
 	c.L(limit);
@@ -277,6 +292,7 @@ void Install(Program* program) {
 		Libs::LibKernel::Memory::FreeGuestMemory(allocated, PageSize);
 		return;
 	}
+	g_drop_rest = drop_rest;
 	g_list_cave.bad.store(reinterpret_cast<uint64_t>(bad.getAddress()), std::memory_order_relaxed);
 	g_list_cave.begin.store(allocated, std::memory_order_release);
 	// Installation occurs before module initializers or guest threads run; program memory is writable to the host.
