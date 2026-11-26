@@ -1399,6 +1399,22 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 	}
 	vk::PhysicalDeviceFaultFeaturesEXT fault_features {};
 	const bool fault_extension = HasExtension(device_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+	// The driver's own crash dump with the fault report (deviceFaultVendorBinary; on NVIDIA a .nv-gpudmp that Nsight
+	// Graphics opens): asked for where the driver offers it, KYTY_DEVICE_FAULT_BINARY=0 leaves it out. On a device loss
+	// DeviceFault::AppendFault writes it next to the emulator (device-fault-<time>.nv-gpudmp) and names the file in the log.
+	bool fault_vendor_binary = false;
+	if (fault_extension) {
+		vk::PhysicalDeviceFaultFeaturesEXT supported_fault {};
+		vk::PhysicalDeviceFeatures2        supported_features {};
+		supported_features.pNext = &supported_fault;
+		physical_device.getFeatures2(&supported_features);
+		const char* binary_value = std::getenv("KYTY_DEVICE_FAULT_BINARY");
+		const bool  binary_off   = binary_value != nullptr && std::string_view(binary_value) == "0";
+		fault_vendor_binary      = supported_fault.deviceFaultVendorBinary == VK_TRUE && !binary_off;
+		std::printf("Device fault: report %s, vendor binary %s\n", supported_fault.deviceFault == VK_TRUE ? "supported" : "not supported",
+		            fault_vendor_binary ? "on" : (binary_off ? "off (KYTY_DEVICE_FAULT_BINARY=0)" : "not supported by the driver"));
+		fault_features.deviceFaultVendorBinary = fault_vendor_binary ? VK_TRUE : VK_FALSE;
+	}
 	if (fault_extension) {
 		fault_features.deviceFault = VK_TRUE;
 		fault_features.pNext       = const_cast<void*>(create_info.pNext);
@@ -1460,7 +1476,7 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 		std::fflush(stdout);
 		return nullptr;
 	}
-	if (fault_extension) DeviceFault::Enable(device, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr);
+	if (fault_extension) DeviceFault::Enable(device, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr, fault_vendor_binary);
 
 	return device;
 }

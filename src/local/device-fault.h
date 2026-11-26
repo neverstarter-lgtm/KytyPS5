@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <map>
 #include <mutex>
 #include <string>
@@ -45,6 +46,7 @@ struct Registry {
 	static constexpr size_t                BufferHistory = size_t {1} << 16u;
 	size_t                                 buffer_limit  = BufferHistory;
 	std::atomic<int>                       report_state {0}; // 0 none, 1 being written, 2 written
+	bool                                   vendor_binary = false; // deviceFaultVendorBinary enabled at device creation
 };
 inline Registry g_registry;
 
@@ -83,7 +85,8 @@ inline Checkpoints g_checkpoints;
 }
 
 // The device was created with the extension and its feature.
-inline void Enable(VkDevice device, PFN_vkGetDeviceProcAddr get_proc) {
+inline void Enable(VkDevice device, PFN_vkGetDeviceProcAddr get_proc, bool vendor_binary = false) {
+	g_registry.vendor_binary = vendor_binary;
 	g_registry.get = reinterpret_cast<PFN_vkGetDeviceFaultInfoEXT>(get_proc(device, "vkGetDeviceFaultInfoEXT"));
 	if (g_registry.get != nullptr) g_registry.device.store(device, std::memory_order_release);
 }
@@ -397,14 +400,38 @@ inline void AppendFault(std::string& text, VkDevice device) {
 	}
 	std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
 	std::vector<VkDeviceFaultVendorInfoEXT>  vendors(counts.vendorInfoCount);
-	counts.vendorBinarySize = 0;
+	// The driver's crash dump (deviceFaultVendorBinary), when enabled and offered: written to a file of its own.
+	std::vector<uint8_t> binary;
+	if (g_registry.vendor_binary && counts.vendorBinarySize != 0) binary.resize(counts.vendorBinarySize);
+	else counts.vendorBinarySize = 0;
 	VkDeviceFaultInfoEXT info {};
-	info.sType         = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
-	info.pAddressInfos = addresses.data();
-	info.pVendorInfos  = vendors.data();
-	const auto result  = g_registry.get(device, &counts, &info);
-	Append(text, "Device fault (%d): %s; %u addresses, %u vendor records\n", static_cast<int>(result), info.description,
-	       counts.addressInfoCount, counts.vendorInfoCount);
+	info.sType             = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
+	info.pAddressInfos     = addresses.data();
+	info.pVendorInfos      = vendors.data();
+	info.pVendorBinaryData = binary.empty() ? nullptr : binary.data();
+	const auto result      = g_registry.get(device, &counts, &info);
+	Append(text, "Device fault (%d): %s; %u addresses, %u vendor records, vendor binary %llu bytes\n", static_cast<int>(result),
+	       info.description, counts.addressInfoCount, counts.vendorInfoCount,
+	       static_cast<unsigned long long>(binary.empty() ? 0 : counts.vendorBinarySize));
+	if (!binary.empty() && counts.vendorBinarySize != 0) {
+		const auto stamp = std::time(nullptr);
+		std::tm    local {};
+#if defined(_WIN32)
+		localtime_s(&local, &stamp);
+#else
+		localtime_r(&stamp, &local);
+#endif
+		char name[64];
+		std::strftime(name, sizeof(name), "device-fault-%Y%m%d-%H%M%S.nv-gpudmp", &local);
+		const auto size = std::min<size_t>(binary.size(), counts.vendorBinarySize);
+		if (FILE* file = std::fopen(name, "wb"); file != nullptr) {
+			const auto written = std::fwrite(binary.data(), 1, size, file);
+			std::fclose(file);
+			Append(text, "Device fault vendor binary: %s (%zu of %zu bytes written)\n", name, written, size);
+		} else {
+			Append(text, "Device fault vendor binary: %s could not be created\n", name);
+		}
+	}
 	addresses.resize(std::min<size_t>(addresses.size(), counts.addressInfoCount));
 	// The same address from many warps (a hang lists each running one's instruction pointer): once, with its count.
 	std::vector<std::pair<VkDeviceFaultAddressInfoEXT, uint32_t>> unique;
