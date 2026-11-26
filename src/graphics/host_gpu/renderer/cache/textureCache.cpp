@@ -1073,16 +1073,36 @@ bool TextureCache::DetachImage(ImageId id) {
 	return true;
 }
 
+// KYTY_IMAGE_RETIRE_FLIPS=N (0 to 60, default 0: off): a deleted image is destroyed N flips later than the GPU's
+// timeline allows at the earliest. A test switch: should GPU faults on a texture (NVRM "TEX LAYOUT", a device fault
+// write at 0) go with it, a destroyed image was still read or written. Costs the held images' video memory.
+static uint64_t ImageRetireFlips() {
+	static const uint64_t flips = [] {
+		const char* value = std::getenv("KYTY_IMAGE_RETIRE_FLIPS");
+		const long  read  = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+		const auto  n     = static_cast<uint64_t>(std::clamp(read, 0L, 60L));
+		if (n != 0) {
+			std::printf("TextureCache: deleted images are destroyed %llu flips late (KYTY_IMAGE_RETIRE_FLIPS)\n",
+			            static_cast<unsigned long long>(n));
+			std::fflush(stdout);
+		}
+		return n;
+	}();
+	return flips;
+}
+
 void TextureCache::RetireImage(ImageId id) {
 	// (A speculation's packet may still read it: Spec::PacketNow.)
-	const auto packet = Spec::PacketNow();
+	const auto packet     = Spec::PacketNow();
+	const auto flips      = ImageRetireFlips();
+	const auto not_before = flips != 0 ? m_gc_tick + flips : uint64_t {0};
 	if (m_scheduler.Active()) {
-		m_scheduler.DeferOperation([this, id, packet] {
-			m_retired.emplace_back(id, packet);
+		m_scheduler.DeferOperation([this, id, packet, not_before] {
+			m_retired.emplace_back(id, packet, not_before);
 			EraseRetired();
 		});
 	} else {
-		m_retired.emplace_back(id, packet);
+		m_retired.emplace_back(id, packet, not_before);
 		EraseRetired();
 	}
 }
@@ -6488,6 +6508,7 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 
 void TextureCache::EraseRetired() {
 	std::erase_if(m_retired, [&](const auto& retired) {
+		if (retired.not_before != 0 && m_gc_tick < retired.not_before) return false;
 		if (!Spec::PacketsPassed(retired.second)) return false;
 		// (A weave worker inside a draw may have found it by its id: kept until that draw ends. Weave::ImageRetiring.)
 		if (Weave::Active() && Weave::HoldsSlot(Weave::Slot::Image, retired.first.index, retired.first.generation))

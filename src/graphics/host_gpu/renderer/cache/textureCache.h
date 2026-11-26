@@ -488,9 +488,17 @@ private:
 	// can read it.
 	[[nodiscard]] bool        DetachImage(ImageId id);
 	void                      RetireImage(ImageId id);
-	// Deleted images a speculation's packet may still read (Spec::PacketsPassed), destroyed once it passed.
-	std::vector<std::pair<ImageId, Spec::PacketMarks>> m_retired;
-	void                                               EraseRetired();
+	// Deleted images a speculation's packet may still read (Spec::PacketsPassed), destroyed once it passed. not_before:
+	// a garbage collector tick (one a flip) before which RetireImage's ones stay too (KYTY_IMAGE_RETIRE_FLIPS, a test
+	// of whether the GPU still reads an image when it is destroyed; 0: off).
+	struct RetiredImage {
+		RetiredImage(ImageId id, const Spec::PacketMarks& packet, uint64_t tick = 0): first(id), second(packet), not_before(tick) {}
+		ImageId           first;
+		Spec::PacketMarks second;
+		uint64_t          not_before = 0;
+	};
+	std::vector<RetiredImage> m_retired;
+	void                      EraseRetired();
 	// An image a depth overlap replaced, out of every index but kept (one an address, the collector's run it was parked
 	// at): ResolveDepthOverlap takes it back when the memory is asked for in its description again, instead of making
 	// another image (the game takes one surface as a depth target and as a color target in turn every frame).
