@@ -174,6 +174,8 @@ public:
 		builder.AddExecutionMode({main, Word(spv::ExecutionMode::Triangles)});
 		builder.AddExecutionMode({main, Word(spv::ExecutionMode::OutputTriangleStrip)});
 		builder.AddExecutionMode({main, Word(spv::ExecutionMode::OutputVertices), 3u});
+		// Invocations 1: Vulkan wants 1-32, none is 0 (VUID-VkPipelineShaderStageCreateInfo-stage-00715).
+		builder.AddExecutionMode({main, Word(spv::ExecutionMode::Invocations), 1u});
 		DefineInterface();
 		builder.AddEntryPoint(Word(spv::ExecutionModel::Geometry), main, "main", interfaces);
 		ResultWithoutType(spv::Op::OpLabel);

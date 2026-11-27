@@ -134,13 +134,17 @@ Prospero::BufferFormat ImageConversionFormat(Prospero::BufferFormat format) {
 	                                                      : Prospero::BufferFormat::kInvalid;
 }
 
+// Integer formats (Sint and Uint) are not linearly filterable: their sampler is a point one
+// (VUID-vkCmdDispatchIndirect-magFilter-04553, 26.11.: R32_UINT/R32G32_UINT read with LINEAR).
 bool RequiresPointSampler(const ImageResource& image) {
 	return image.numeric_class == Prospero::TextureNumericClass::Sint ||
+	       image.numeric_class == Prospero::TextureNumericClass::Uint ||
 	       image.conversion_format != Prospero::BufferFormat::kInvalid;
 }
 
 bool RequiresPointSampler(const ResourceSpecialization::Image& image) {
 	return image.numeric_class == Prospero::TextureNumericClass::Sint ||
+	       image.numeric_class == Prospero::TextureNumericClass::Uint ||
 	       image.conversion_format != Prospero::BufferFormat::kInvalid;
 }
 

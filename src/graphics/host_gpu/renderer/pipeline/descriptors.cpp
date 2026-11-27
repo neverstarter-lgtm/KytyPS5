@@ -1058,6 +1058,18 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 	}
 	desc.view_info = TextureViewInfo(resource, descriptor, view_format, surface_format, storage,
 	                                 view_levels, desc.info.resources.layers);
+	// No more levels than the extent's full chain (VUID-VkImageCreateInfo-mipLevels-00958, 26.11.: 4x1x1 with 9). The
+	// guest layout (mip_layout, data size) keeps every level of the T#; the image and its view hold the reachable ones.
+	// (Dynamic storage views keep theirs: their count must match the shader's mip_count.)
+	if (!multisampled && !dynamic_storage) {
+		const uint32_t chain = static_cast<uint32_t>(std::bit_width(std::max({width, height, volume ? depth : 1u})));
+		if (desc.info.resources.levels > chain) {
+			desc.info.resources.levels = chain;
+			auto& view                 = desc.view_info;
+			if (view.base_level >= chain) view.base_level = chain - 1u;
+			view.level_count = std::min(view.level_count, chain - view.base_level);
+		}
+	}
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
 	if (static const bool log_views = std::getenv("KYTY_UPLOAD_LOG") != nullptr; log_views && levels > 1 && !storage) {
 		std::printf("[tsc %llu] TSHARP addr=0x%llx size=0x%llx fmt=%u %ux%u levels=%u base=%u last=%u min_lod=%u warn=%u "
